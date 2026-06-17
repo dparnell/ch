@@ -4,7 +4,7 @@ name = "ch"
 version = "0.1.0"
 edition = "2024"
 description = "A simple single threaded channel implementation"
-license = "Creative Commons"
+license = "CC-BY-4.0"
 repository = "https://github.com/dparnell/ch"
 
 [dependencies]

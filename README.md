@@ -92,3 +92,7 @@ ch = "0.1.0"
 ```bash
 cargo test
 ```
+
+## License
+
+This project is licensed under the Creative Commons Attribution 4.0 International License. See the [LICENSE](LICENSE) file for details.
