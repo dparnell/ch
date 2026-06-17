@@ -1,0 +1,7 @@
+[package]
+authors = ["Daniel Parnell <me@danielparnell.com>"]
+name = "ch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
