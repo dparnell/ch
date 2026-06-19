@@ -1,30 +1,49 @@
 use std::cell::{Cell, RefCell};
 use std::future::Future;
+use std::ops::AsyncFnMut;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+/// Internal trait to allow dynamic dispatch of async closures
+trait AsyncHandler<T, R>: 'static {
+    fn call<'a>(&'a mut self, item: T) -> Pin<Box<dyn Future<Output = R> + 'a>>
+    where
+        T: 'a;
+}
+
+impl<T, R, F> AsyncHandler<T, R> for F
+where
+    F: AsyncFnMut(T) -> R + 'static,
+    T: 'static,
+    R: 'static,
+{
+    fn call<'a>(&'a mut self, item: T) -> Pin<Box<dyn Future<Output = R> + 'a>>
+    where
+        T: 'a,
+    {
+        Box::pin(self(item))
+    }
+}
+
 /// A self-contained, single-threaded bi-directional channel that abuses the rust async stuff to get a simple channel abstraction.
 ///
 /// Each instance is self-sufficient and does not rely on a global executor or task queue.
-pub struct Channel<T, R> {
-    handler: Rc<RefCell<dyn FnMut(T) -> Pin<Box<dyn Future<Output = R>>>>>,
+pub struct Channel<T: 'static, R: 'static> {
+    handler: Rc<RefCell<dyn AsyncHandler<T, R>>>,
 }
 
-impl<T, R> Channel<T, R> {
+impl<T: 'static, R: 'static> Channel<T, R> {
     /// Creates a new channel with an async handler.
     ///
     /// The handler is called every time an item is sent to the channel.
-    /// The handler is a closure that captures and mutates local state (FnMut).
-    pub fn new<F, Fut>(mut handler: F) -> Self
+    /// The handler is an async closure that captures and mutates local state (AsyncFnMut).
+    pub fn new<F>(handler: F) -> Self
     where
-        F: FnMut(T) -> Fut + 'static,
-        Fut: Future<Output = R> + 'static,
+        F: AsyncFnMut(T) -> R + 'static,
     {
         Self {
-            handler: Rc::new(RefCell::new(
-                move |item| -> Pin<Box<dyn Future<Output = R>>> { Box::pin(handler(item)) },
-            )),
+            handler: Rc::new(RefCell::new(handler)),
         }
     }
 
@@ -32,7 +51,8 @@ impl<T, R> Channel<T, R> {
     ///
     /// This method drives the internal async handler to completion.
     pub fn send(&self, item: T) -> R {
-        let mut future = (self.handler.borrow_mut())(item);
+        let mut handler = self.handler.borrow_mut();
+        let mut future = handler.call(item);
         let state = Rc::new(WakerState {
             woken: Cell::new(true),
         });
@@ -104,10 +124,10 @@ mod tests {
 
     fn make_accumulator(initial: i32) -> Channel<i32, i32> {
         let mut sum = initial;
-        Channel::new(move |val: i32| {
+        Channel::new(async move |val: i32| {
             sum += val;
             let current = sum;
-            async move { current }
+            current
         })
     }
 
@@ -132,12 +152,10 @@ mod tests {
         let doubler = Channel::new(|val: i32| async move { val * 2 });
         let adder = Channel::new({
             let doubler = doubler.clone();
-            move |val: i32| {
+            async move |val: i32| {
                 let doubler = doubler.clone();
-                async move {
-                    let doubled = doubler.send(val);
-                    doubled + 1
-                }
+                let doubled = doubler.send(val);
+                doubled + 1
             }
         });
 
@@ -151,13 +169,11 @@ mod tests {
 
         let channel = Channel::new({
             let counter = counter.clone();
-            move |val: i32| {
+            async move |val: i32| {
                 let counter = counter.clone();
-                async move {
-                    let mut count = counter.borrow_mut();
-                    *count += val;
-                    *count
-                }
+                let mut count = counter.borrow_mut();
+                *count += val;
+                *count
             }
         });
 
@@ -170,10 +186,10 @@ mod tests {
     #[test]
     fn test_fn_mut_state() {
         let mut count = 0;
-        let channel = Channel::new(move |val: i32| {
+        let channel = Channel::new(async move |val: i32| {
             count += val;
             let current = count;
-            async move { current }
+            current
         });
 
         assert_eq!(channel.send(5), 5);
@@ -196,6 +212,18 @@ mod tests {
         assert_eq!(chan1.send(1), 16);
         // Verify chan2 was not affected by chan1
         assert_eq!(chan2.send(1), 131);
+    }
+
+    #[test]
+    fn test_async_closure() {
+        let mut count = 0;
+        let channel = Channel::new(async move |val: i32| {
+            count += val;
+            count
+        });
+
+        assert_eq!(channel.send(5), 5);
+        assert_eq!(channel.send(10), 15);
     }
 
     #[test]
